@@ -1,7 +1,7 @@
 #!/bin/bash
 
 : <<-'EOF'
-Copyright 2017 Xingwang Liao <kuoruan@gmail.com>
+Copyright 2017-2019 Xingwang Liao <kuoruan@gmail.com>
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
 You may obtain a copy of the License at
@@ -17,7 +17,7 @@ export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 # 版本信息，请勿修改
 # =================
-SHELL_VERSION=20
+SHELL_VERSION=23
 CONFIG_VERSION=6
 INIT_VERSION=3
 # =================
@@ -31,10 +31,11 @@ KCPTUN_TAGS_URL='https://github.com/xtaci/kcptun/tags'
 BASE_URL='https://github.com/kuoruan/shell-scripts/raw/master/kcptun'
 SHELL_VERSION_INFO_URL="${BASE_URL}/version.json"
 
-JQ_LINUX32_URL="${BASE_URL}/bin/jq-linux32"
-JQ_LINUX64_URL="${BASE_URL}/bin/jq-linux64"
-JQ_LINUX32_HASH='5ac55877f41916b80fe546e16d58678cca9aae6d'
-JQ_LINUX64_HASH='d8e36831c3c94bb58be34dd544f44a6c6cb88568'
+JQ_DOWNLOAD_URL="https://github.com/stedolan/jq/releases/download/jq-1.5/"
+JQ_LINUX32_URL="${JQ_DOWNLOAD_URL}/jq-linux32"
+JQ_LINUX64_URL="${JQ_DOWNLOAD_URL}/jq-linux64"
+JQ_LINUX32_HASH='ab440affb9e3f546cf0d794c0058543eeac920b0cd5dff660a2948b970beb632'
+JQ_LINUX64_HASH='c6b3a7d7d3e7b70c6f51b706a3b90bd01833846c54d32ca32f0027f00226ff6d'
 JQ_BIN="${KCPTUN_INSTALL_DIR}/bin/jq"
 
 SUPERVISOR_SERVICE_FILE_DEBIAN_URL="${BASE_URL}/startup/supervisord.init.debain"
@@ -56,6 +57,7 @@ D_DATASHARD=10
 D_PARITYSHARD=3
 D_DSCP=0
 D_NOCOMP='false'
+D_QUIET='false'
 D_SNMPPERIOD=60
 D_PPROF='false'
 
@@ -70,7 +72,7 @@ D_KEEPALIVE=10
 # ======================
 
 # 当前选择的实例 ID
-current_instance_id=
+current_instance_id=""
 run_user='kcptun'
 
 clear
@@ -87,6 +89,7 @@ cat >&1 <<-'EOF'
 #########################################################
 EOF
 
+# 打印帮助信息
 usage() {
 	cat >&1 <<-EOF
 
@@ -120,17 +123,20 @@ usage() {
 	exit $1
 }
 
+# 判断命令是否存在
 command_exists() {
 	command -v "$@" >/dev/null 2>&1
 }
 
+# 判断输入内容是否为数字
 is_number() {
 	expr $1 + 1 >/dev/null 2>&1
 }
 
+# 按任意键继续
 any_key_to_continue() {
 	echo "请按任意键继续或 Ctrl + C 退出"
-	local saved=
+	local saved=""
 	saved="$(stty -g)"
 	stty -echo
 	stty cbreak
@@ -140,8 +146,9 @@ any_key_to_continue() {
 	stty $saved
 }
 
+# 检查是否具有 root 权限
 check_root() {
-	local user=
+	local user=""
 	user="$(id -un 2>/dev/null || true)"
 	if [ "$user" != "root" ]; then
 		cat >&2 <<-'EOF'
@@ -153,8 +160,8 @@ check_root() {
 
 # 获取服务器的IP地址
 get_server_ip() {
-	local server_ip=
-	local interface_info=
+	local server_ip=""
+	local interface_info=""
 
 	if command_exists ip; then
 		interface_info="$(ip addr)"
@@ -167,8 +174,9 @@ get_server_ip() {
 		grep -vE "^192\.168|^172\.1[6-9]\.|^172\.2[0-9]\.|^172\.3[0-2]\.|^10\.|^127\.|^255\.|^0\." | \
 		head -n 1)
 
+	# 自动获取失败时，通过网站提供的 API 获取外网地址
 	if [ -z "$server_ip" ]; then
-		 server_ip="$(wget -qO- ipv4.icanhazip.com)"
+		 server_ip="$(wget -qO- --no-check-certificate https://ipv4.icanhazip.com)"
 	fi
 
 	echo "$server_ip"
@@ -185,9 +193,10 @@ disable_selinux() {
 	fi
 }
 
+# 获取当前操作系统信息
 get_os_info() {
-	lsb_dist=''
-	dist_version=''
+	lsb_dist=""
+	dist_version=""
 	if command_exists lsb_release; then
 		lsb_dist="$(lsb_release -si)"
 	fi
@@ -281,8 +290,9 @@ get_os_info() {
 	fi
 }
 
+# 获取服务器架构和 Kcptun 服务端文件后缀名
 get_arch() {
-	architecture=$(uname -m)
+	architecture="$(uname -m)"
 	case "$architecture" in
 		amd64|x86_64)
 			spruce_type='linux-amd64'
@@ -302,11 +312,12 @@ get_arch() {
 	esac
 }
 
+# 获取 API 内容
 get_content() {
 	local url="$1"
 	local retry=0
 
-	local content=
+	local content=""
 	get_network_content() {
 		if [ $retry -ge 3 ]; then
 			cat >&2 <<-EOF
@@ -330,12 +341,13 @@ get_content() {
 	echo "$content"
 }
 
+# 下载文件， 默认重试 3 次
 download_file() {
 	local url="$1"
 	local file="$2"
 	local verify="$3"
 	local retry=0
-	local verify_cmd=
+	local verify_cmd=""
 
 	verify_file() {
 		if [ -z "$verify_cmd" ] && [ -n "$verify" ]; then
@@ -350,7 +362,7 @@ download_file() {
 			fi
 
 			if [ -n "$verify_cmd" ] && ! command_exists "$verify_cmd"; then
-				verify_cmd=
+				verify_cmd=""
 			fi
 		fi
 
@@ -401,6 +413,10 @@ download_file() {
 	download_file_to_path
 }
 
+# 安装 jq 用于解析和生成 json 文件
+# jq 已进入大部分 Linux 发行版的软件仓库，
+#  	URL: https://stedolan.github.io/jq/download/
+# 但为了防止有些系统安装失败，还是通过脚本来提供了。
 install_jq() {
 	check_jq() {
 		if [ ! -f "$JQ_BIN" ]; then
@@ -410,7 +426,7 @@ install_jq() {
 		[ ! -x "$JQ_BIN" ] && chmod a+x "$JQ_BIN"
 
 		if ( $JQ_BIN --help 2>/dev/null | grep -q "JSON" ); then
-			is_checkd_jq="true"
+			is_checked_jq="true"
 			return 0
 		else
 			rm -f "$JQ_BIN"
@@ -418,8 +434,8 @@ install_jq() {
 		fi
 	}
 
-	if [ -z "$is_checkd_jq" ] && ! check_jq; then
-		local dir=
+	if [ -z "$is_checked_jq" ] && ! check_jq; then
+		local dir=""
 		dir="$(dirname "$JQ_BIN")"
 		if [ ! -d "$dir" ]; then
 			(
@@ -448,11 +464,11 @@ install_jq() {
 			exit 1
 		fi
 
-
 		return 0
 	fi
 }
 
+# 读取 json 文件中某一项的值
 get_json_string() {
 	install_jq
 
@@ -460,7 +476,7 @@ get_json_string() {
 	local selector="$2"
 	local regex="$3"
 
-	local str=
+	local str=""
 	if [ -n "$content" ]; then
 		str="$(echo "$content" | $JQ_BIN -r "$selector" 2>/dev/null)"
 
@@ -471,6 +487,11 @@ get_json_string() {
 	echo "$str"
 }
 
+# 获取当前实例的配置文件路径，传入参数：
+# * config: kcptun 服务端配置文件
+# * log: kcptun 日志文件路径
+# * snmp: kcptun snmp 日志文件路径
+# * supervisor: 实例的 supervisor 文件路径
 get_current_file() {
 	case "$1" in
 		config)
@@ -497,12 +518,14 @@ get_instance_count() {
 	fi
 }
 
+# 通过 API 获取对应版本号 Kcptun 的 release 信息
+# 传入 Kcptun 版本号
 get_kcptun_version_info() {
 	local request_version=$1
 
-	local version_content=
+	local version_content=""
 	if [ -n "$request_version" ]; then
-		local json_content=
+		local json_content=""
 		json_content="$(get_content "$KCPTUN_RELEASES_URL")"
 		version_content="$(get_json_string "$json_content" ".[] | select(.tag_name == \"${request_version}\")")"
 	else
@@ -529,17 +552,17 @@ get_kcptun_version_info() {
 	kcptun_release_publish_time="$(get_json_string "$version_content" '.published_at')"
 	kcptun_release_html_url="$(get_json_string "$version_content" '.html_url')"
 
-	local body=
+	local body=""
 	body="$(get_json_string "$version_content" '.body' | grep -vE '(^```)|(^>)|(^[[:space:]]*$)')"
 
 	kcptun_release_body="$(echo "$body" | grep -vE "[0-9a-zA-Z]{32,}")"
 
-	local file_verify=
+	local file_verify=""
 	file_verify="$(echo "$body" | grep "$spruce_type")"
 
 	if [ -n "$file_verify" ]; then
 		local i=1
-		local split=
+		local split=""
 		while :
 		do
 			split="$(echo "$file_verify" | cut -d ' ' -f$i)"
@@ -558,8 +581,9 @@ get_kcptun_version_info() {
 	return 0
 }
 
+# 获取脚本版本信息
 get_shell_version_info() {
-	local shell_version_content=
+	local shell_version_content=""
 	shell_version_content="$(get_content "$SHELL_VERSION_INFO_URL")"
 	if [ -z "$shell_version_content" ]; then
 		return 1
@@ -576,6 +600,7 @@ get_shell_version_info() {
 	return 0
 }
 
+# 下载并安装 Kcptun
 install_kcptun() {
 	if [ -z "$kcptun_release_download_url" ]; then
 		get_kcptun_version_info $1
@@ -614,7 +639,7 @@ install_kcptun() {
 		sleep 3
 	)
 
-	local kcptun_server_file=
+	local kcptun_server_file=""
 	kcptun_server_file="$(get_kcptun_server_file)"
 
 	if [ ! -f "$kcptun_server_file" ]; then
@@ -639,6 +664,7 @@ install_kcptun() {
 	rm -f "$kcptun_file_name" "${KCPTUN_INSTALL_DIR}/client_$file_suffix"
 }
 
+# 安装依赖软件
 install_deps() {
 	if [ -z "$lsb_dist" ]; then
 		get_os_info
@@ -646,7 +672,7 @@ install_deps() {
 
 	case "$lsb_dist" in
 		ubuntu|debian|raspbian)
-			local did_apt_get_update=
+			local did_apt_get_update=""
 			apt_get_update() {
 				if [ -z "$did_apt_get_update" ]; then
 					( set -x; sleep 3; apt-get update )
@@ -669,9 +695,14 @@ install_deps() {
 				( set -x; sleep 3; apt-get install -y -q tar )
 			fi
 
-			if ! command_exists easy_install; then
+			if ! command_exists pip; then
 				apt_get_update
-				( set -x; sleep 3; apt-get install -y -q python-setuptools )
+				( set -x; sleep 3; apt-get install -y -q python-pip || true )
+			fi
+
+			if ! command_exists python; then
+				apt_get_update
+				( set -x; sleep 3; apt-get install -y -q python )
 			fi
 			;;
 		fedora|centos|redhat|oraclelinux|photon)
@@ -688,8 +719,12 @@ install_deps() {
 					( set -x; sleep 3; dnf -y -q install tar )
 				fi
 
-				if ! command_exists easy_install; then
-					( set -x; sleep 3; dnf -y -q install python-setuptools )
+				if ! command_exists pip; then
+					( set -x; sleep 3; dnf -y -q install python-pip || true )
+				fi
+
+				if ! command_exists python; then
+					( set -x; sleep 3; dnf -y -q install python )
 				fi
 			elif [ "$lsb_dist" = "photon" ]; then
 				if ! command_exists wget; then
@@ -704,8 +739,12 @@ install_deps() {
 					( set -x; sleep 3; tdnf -y install tar )
 				fi
 
-				if ! command_exists easy_install; then
-					( set -x; sleep 3; tdnf -y install python-setuptools )
+				if ! command_exists pip; then
+					( set -x; sleep 3; tdnf -y install python-pip || true )
+				fi
+
+				if ! command_exists python; then
+					( set -x; sleep 3; tdnf -y install python )
 				fi
 			else
 				if ! command_exists wget; then
@@ -720,8 +759,16 @@ install_deps() {
 					( set -x; sleep 3; yum -y -q install tar )
 				fi
 
-				if ! command_exists easy_install; then
-					( set -x; sleep 3; yum -y -q install python-setuptools )
+				# CentOS 等红帽系操作系统的软件库中可能不包括 python-pip
+				# 通常需要先安装 epel-release 扩展库
+				# 先在这里尝试安装 python-pip
+				if ! command_exists pip; then
+					( set -x; sleep 3; yum -y -q install python-pip || true )
+				fi
+
+				# 如果 python-pip 安装失败，检测是否已安装 python 环境
+				if ! command_exists python; then
+					( set -x; sleep 3; yum -y -q install python )
 				fi
 			fi
 			;;
@@ -734,18 +781,20 @@ install_deps() {
 			;;
 	esac
 
+	# 这里判断了是否存在安装失败的软件包，但是默认不处理 python-pip 的安装失败，
+	# 接下来会统一检测并再次安装 pip 命令
 	if [ "$?" != 0 ]; then
 		cat >&2 <<-'EOF'
 		一些依赖软件安装失败，
 		请查看日志检查错误。
 		EOF
-
 		exit 1
 	fi
 
 	install_jq
 }
 
+# 安装 supervisor
 install_supervisor() {
 	if [ -s /etc/supervisord.conf ] && command_exists supervisord; then
 		cat >&2 <<-EOF
@@ -761,38 +810,116 @@ install_supervisor() {
 		exit 1
 	fi
 
-	if ! command_exists easy_install; then
+	if ! command_exists pip; then
+		# 如果没有监测到 pip 命令，但当前服务器已经安装 python
+		# 使用 get-pip.py 脚本来安装 pip 命令
+		if command_exists python; then
+			local python_version="$(python -V 2>&1)"
+
+			if [ "$?" != "0" ]; then
+				cat >&2 <<-EOF
+				python 环境已损坏，或无法通过 python -V 来获取版本号。
+				EOF
+
+				exit 1
+			fi
+
+			local version_string="$(echo "$python_version" | cut -d' ' -f2 | head -n1)"
+			local major_version="$(echo "$version_string" | cut -d'.' -f1)"
+			local minor_version="$(echo "$version_string" | cut -d'.' -f2)"
+
+			if [ -z "$major_version" ] || [ -z "$minor_version" ] || \
+				! ( is_number "$major_version" ); then
+				cat >&2 <<-EOF
+				获取 python 版本号失败：${python_version}
+				EOF
+				exit 1
+			fi
+
+			if [ "$major_version" -lt "2" ]; then
+				cat >&2 <<-EOF
+				不支持的 python 版本 ${version_string}，当前仅支持 python 2.6 及以上版本的安装。
+				EOF
+				exit 1
+			fi
+
+			local is_python_26="false"
+
+			if [ "$major_version" = "2" ] && [ "$minor_version" = "6" ]; then
+				is_python_26="true"
+
+				cat >&1 <<-EOF
+				注意：当前服务器的 python 版本为 ${version_string},
+				脚本对 python 2.6 及以下版本的支持可能会失效，
+				请尽快升级 python 版本到 >= 2.7.9 或 >= 3.4。
+				EOF
+
+				any_key_to_continue
+			fi
+
+			if [ "$is_python_26" = "true" ]; then
+				(
+					set -x
+					wget -qO- --no-check-certificate https://bootstrap.pypa.io/2.6/get-pip.py | python
+				)
+			else
+				(
+					set -x
+					wget -qO- --no-check-certificate https://bootstrap.pypa.io/get-pip.py | python
+				)
+			fi
+		fi
+	fi
+
+	# 如果使用脚本安装依然失败，提示手动安装
+	if ! command_exists pip; then
 		cat >&2 <<-EOF
-		未找到已安装的 easy_install 命令，
-		请先手动安装 python-setuptools
-		然后重新运行安装脚本。
+		未找到已安装的 pip 命令，请先手动安装 python-pip
+		本脚本自 v21 版开始使用 pip 来安装 Supervisior。
+
+		1. 对于 Debian 系的 Linux 系统，可以尝试使用：
+		  sudo apt-get install -y python-pip 来进行安装
+
+		2. 对于 Redhat 系的 Linux 系统，可以尝试使用：
+		  sudo yum install -y python-pip 来进行安装
+		  * 注：如果提示未找到该软件，请先使用以下命令来安装扩展软件仓库：
+		      sudo yum install -y epel-release
+		    然后再次安装 python-pip
+
+		3. 如果以上方法都失败了，请使用以下命令来手动安装：
+		  wget -qO- --no-check-certificate https://bootstrap.pypa.io/get-pip.py | python
+		  * python 2.6 的用户请使用：
+		    wget -qO- --no-check-certificate https://bootstrap.pypa.io/2.6/get-pip.py | python
+
+		pip 安装完毕之后，请重新运行安装脚本。
 		EOF
 		exit 1
 	fi
 
-	if ! ( easy_install --help >/dev/null 2>&1 ); then
+	if ! ( pip --version >/dev/null 2>&1 ); then
 		cat >&2 <<-EOF
-		检测到你的 easy_install 已损坏，
-		通常是由于你自己升级过 python 版本，
-		但是没有将 easy_install 链接到新的地址。
-		需要手动做一个软链接
-		 * ln -s /usr/local/python2.7/bin/easy_install /usr/bin/easy_install
-
-		 "/usr/local/python2.7" 应该为你新版本 python 的路径
+		检测到当前环境的 pip 命令已损坏，
+		请检查你的 python 环境。
 		EOF
 		exit 1
+	else
+		# 已安装 pip 时先尝试更新一下
+		(
+			set -x
+			pip install --upgrade pip || true
+		)
 	fi
 
 	(
 		set -x
-		easy_install -U supervisor
+		pip install supervisor
 	)
 
 	if [ "$?" != "0" ]; then
 		cat >&2 <<-EOF
 		错误: 安装 Supervisor 失败，
 		请尝试使用
-		  easy_install -U supervisor
+		  pip install supervisor
 		来手动安装。
 		EOF
 
@@ -859,16 +986,22 @@ install_supervisor() {
 }
 
 download_startup_file() {
-	local supervisor_startup_file=
-	local supervisor_startup_file_url=
+	local supervisor_startup_file=""
+	local supervisor_startup_file_url=""
 
 	if command_exists systemctl; then
-		supervisor_startup_file='/lib/systemd/system/supervisord.service'
+		supervisor_startup_file="/etc/systemd/system/supervisord.service"
 		supervisor_startup_file_url="$SUPERVISOR_SYSTEMD_FILE_URL"
 
 		download_file "$supervisor_startup_file_url" "$supervisor_startup_file"
 		(
 			set -x
+			# 删除旧版 service 文件
+
+			local old_service_file="/lib/systemd/system/supervisord.service"
+			if [ -f "$old_service_file" ]; then
+				rm -f "$old_service_file"
+			fi
 			systemctl daemon-reload >/dev/null 2>&1
 		)
 	elif command_exists service; then
@@ -981,8 +1114,8 @@ set_kcptun_config() {
 		return $?
 	}
 
-	local input=
-	local yn=
+	local input=""
+	local yn=""
 
 	# 设置服务运行端口
 	[ -z "$listen_port" ] && listen_port="$D_LISTEN_PORT"
@@ -1010,7 +1143,7 @@ set_kcptun_config() {
 		break
 	done
 
-	input=
+	input=""
 	cat >&1 <<-EOF
 	---------------------------
 	端口 = ${listen_port}
@@ -1027,7 +1160,7 @@ set_kcptun_config() {
 		target_addr="$input"
 	fi
 
-	input=
+	input=""
 	cat >&1 <<-EOF
 	---------------------------
 	加速地址 = ${target_addr}
@@ -1071,8 +1204,8 @@ set_kcptun_config() {
 		break
 	done
 
-	input=
-	yn=
+	input=""
+	yn=""
 	cat >&1 <<-EOF
 	---------------------------
 	加速端口 = ${target_port}
@@ -1087,7 +1220,7 @@ set_kcptun_config() {
 	read -p "(默认密码: ${key}): " input
 	[ -n "$input" ] && key="$input"
 
-	input=
+	input=""
 	cat >&1 <<-EOF
 	---------------------------
 	密码 = ${key}
@@ -1125,7 +1258,7 @@ set_kcptun_config() {
 		break
 	done
 
-	input=
+	input=""
 	i=0
 	cat >&1 <<-EOF
 	-----------------------------
@@ -1163,7 +1296,7 @@ set_kcptun_config() {
 		break
 	done
 
-	input=
+	input=""
 	i=0
 	cat >&1 <<-EOF
 	---------------------------
@@ -1174,10 +1307,10 @@ set_kcptun_config() {
 	if [ "$mode" = "manual" ]; then
 		set_manual_parameters
 	else
-		nodelay=
-		interval=
-		resend=
-		nc=
+		nodelay=""
+		interval=""
+		resend=""
+		nc=""
 	fi
 
 	[ -z "$mtu" ] && mtu="$D_MTU"
@@ -1198,7 +1331,7 @@ set_kcptun_config() {
 		break
 	done
 
-	input=
+	input=""
 	cat >&1 <<-EOF
 	---------------------------
 	MTU = ${mtu}
@@ -1224,7 +1357,7 @@ set_kcptun_config() {
 		break
 	done
 
-	input=
+	input=""
 	cat >&1 <<-EOF
 	---------------------------
 	sndwnd = ${sndwnd}
@@ -1249,7 +1382,7 @@ set_kcptun_config() {
 		break
 	done
 
-	input=
+	input=""
 	cat >&1 <<-EOF
 	---------------------------
 	rcvwnd = ${rcvwnd}
@@ -1275,7 +1408,7 @@ set_kcptun_config() {
 		break
 	done
 
-	input=
+	input=""
 	cat >&1 <<-EOF
 	---------------------------
 	datashard = ${datashard}
@@ -1301,7 +1434,7 @@ set_kcptun_config() {
 		break
 	done
 
-	input=
+	input=""
 	cat >&1 <<-EOF
 	---------------------------
 	parityshard = ${parityshard}
@@ -1326,7 +1459,7 @@ set_kcptun_config() {
 		break
 	done
 
-	input=
+	input=""
 	cat >&1 <<-EOF
 	---------------------------
 	DSCP = ${dscp}
@@ -1357,16 +1490,47 @@ set_kcptun_config() {
 		break
 	done
 
-	yn=
+	yn=""
 	cat >&1 <<-EOF
 	---------------------------
 	nocomp = ${nocomp}
 	---------------------------
 	EOF
 
+	[ -z "$quiet" ] && quiet="$D_QUIET"
+	while :
+	do
+		cat >&1 <<-'EOF'
+		是否屏蔽 open/close 日志输出?
+		EOF
+		read -p "(默认: ${quiet}) [y/n]: " yn
+		if [ -n "$yn" ]; then
+			case "${yn:0:1}" in
+				y|Y)
+					quiet='true'
+					;;
+				n|N)
+					quiet='false'
+					;;
+				*)
+					echo "输入有误，请重新输入!"
+					continue
+					;;
+			esac
+		fi
+		break
+	done
+
+	yn=""
+	cat >&1 <<-EOF
+	---------------------------
+	quiet = ${quiet}
+	---------------------------
+	EOF
+
 	unset_snmp() {
-		snmplog=
-		snmpperiod=
+		snmplog=""
+		snmpperiod=""
 		cat >&1 <<-EOF
 		---------------------------
 		不记录 SNMP 日志
@@ -1387,7 +1551,7 @@ set_kcptun_config() {
 				unset_snmp
 				;;
 		esac
-		yn=
+		yn=""
 	else
 		unset_snmp
 	fi
@@ -1417,7 +1581,7 @@ set_kcptun_config() {
 		break
 	done
 
-	yn=
+	yn=""
 	cat >&1 <<-EOF
 	---------------------------
 	pprof = ${pprof}
@@ -1425,9 +1589,9 @@ set_kcptun_config() {
 	EOF
 
 	unset_hidden_parameters() {
-		acknodelay=
-		sockbuf=
-		keepalive=
+		acknodelay=""
+		sockbuf=""
+		keepalive=""
 		cat >&1 <<-EOF
 		---------------------------
 		不配置隐藏参数
@@ -1464,7 +1628,7 @@ set_kcptun_config() {
 set_snmp() {
 	snmplog="$(get_current_file 'snmp')"
 
-	local input=
+	local input=""
 	[ -z "$snmpperiod" ] && snmpperiod="$D_SNMPPERIOD"
 	while :
 	do
@@ -1493,8 +1657,8 @@ set_snmp() {
 
 set_manual_parameters() {
 	echo "开始配置手动参数..."
-	local input=
-	local yn=
+	local input=""
+	local yn=""
 
 	[ -z "$nodelay" ] && nodelay="$D_NODELAY"
 	while :
@@ -1522,7 +1686,7 @@ set_manual_parameters() {
 		break
 	done
 
-	input=
+	input=""
 	cat >&1 <<-EOF
 	---------------------------
 	nodelay = ${nodelay}
@@ -1547,7 +1711,7 @@ set_manual_parameters() {
 		break
 	done
 
-	input=
+	input=""
 	cat >&1 <<-EOF
 	---------------------------
 	interval = ${interval}
@@ -1584,7 +1748,7 @@ set_manual_parameters() {
 		break
 	done
 
-	input=
+	input=""
 	cat >&1 <<-EOF
 	---------------------------
 	resend = ${resend}
@@ -1625,8 +1789,8 @@ set_manual_parameters() {
 
 set_hidden_parameters() {
 	echo "开始设置隐藏参数..."
-	local input=
-	local yn=
+	local input=""
+	local yn=""
 
 	[ -z "$acknodelay" ] && acknodelay="$D_ACKNODELAY"
 	while :
@@ -1652,7 +1816,7 @@ set_hidden_parameters() {
 		break
 	done
 
-	yn=
+	yn=""
 	cat >&1 <<-EOF
 	---------------------------
 	acknodelay = ${acknodelay}
@@ -1677,7 +1841,7 @@ set_hidden_parameters() {
 		break
 	done
 
-	input=
+	input=""
 	cat >&1 <<-EOF
 	---------------------------
 	sockbuf = ${sockbuf}
@@ -1709,9 +1873,10 @@ set_hidden_parameters() {
 	EOF
 }
 
+# 生成 Kcptun 服务端配置文件
 gen_kcptun_config() {
 	mk_file_dir() {
-		local dir=
+		local dir=""
 		dir="$(dirname $1)"
 		local mod=$2
 
@@ -1727,9 +1892,9 @@ gen_kcptun_config() {
 		fi
 	}
 
-	local config_file=
+	local config_file=""
 	config_file="$(get_current_file 'config')"
-	local supervisor_config_file=
+	local supervisor_config_file=""
 	supervisor_config_file="$(get_current_file 'supervisor')"
 
 	mk_file_dir "$config_file"
@@ -1768,7 +1933,7 @@ gen_kcptun_config() {
 		install_jq
 		local k; local v
 
-		local json=
+		local json=""
 		json="$(cat "$config_file")"
 		for k in "$@"; do
 			v="$(eval echo "\$$k")"
@@ -1787,7 +1952,7 @@ gen_kcptun_config() {
 		fi
 	}
 
-	write_configs_to_file "snmplog" "snmpperiod" "pprof" "acknodelay" "nodelay" \
+	write_configs_to_file "quiet" "snmplog" "snmpperiod" "pprof" "acknodelay" "nodelay" \
 		"interval" "resend" "nc" "sockbuf" "keepalive"
 
 	if ! grep -q "^${run_user}:" '/etc/passwd'; then
@@ -1811,6 +1976,7 @@ gen_kcptun_config() {
 	EOF
 }
 
+# 设置防火墙开放端口
 set_firewall() {
 	if command_exists firewall-cmd; then
 		if ! ( firewall-cmd --state >/dev/null 2>&1 ); then
@@ -1867,7 +2033,7 @@ select_instance() {
 		当前有多个 Kcptun 实例 (按最后修改时间排序):
 		EOF
 
-		local files=
+		local files=""
 		files=$(ls -lt '/etc/supervisor/conf.d/' | grep "^-" | awk '{print $9}' | grep "^kcptun[0-9]*\.conf$")
 		local i=0
 		local array=""
@@ -1880,7 +2046,7 @@ select_instance() {
 			echo "(${i}) ${file%.*}"
 		done
 
-		local sel=
+		local sel=""
 		while :
 		do
 			read -p "请选择 [1~${i}]: " sel
@@ -1904,6 +2070,7 @@ select_instance() {
 	fi
 }
 
+# 通过当前服务端环境获取 Kcptun 服务端文件名
 get_kcptun_server_file() {
 	if [ -z "$file_suffix" ]; then
 		get_arch
@@ -1912,6 +2079,7 @@ get_kcptun_server_file() {
 	echo "${KCPTUN_INSTALL_DIR}/server_$file_suffix"
 }
 
+# 计算新实例的 ID
 get_new_instance_id() {
 	if [ -f "/etc/supervisor/conf.d/kcptun.conf" ]; then
 		local i=2
@@ -1923,8 +2091,9 @@ get_new_instance_id() {
 	fi
 }
 
+# 获取已安装的 Kcptun 版本
 get_installed_version() {
-	local server_file=
+	local server_file=""
 	server_file="$(get_kcptun_server_file)"
 
 	if [ -f "$server_file" ]; then
@@ -1936,8 +2105,9 @@ get_installed_version() {
 	fi
 }
 
+# 加载当前选择实例的配置文件
 load_instance_config() {
-	local config_file=
+	local config_file=""
 	config_file="$(get_current_file 'config')"
 
 	if [ ! -s "$config_file" ]; then
@@ -1947,7 +2117,7 @@ load_instance_config() {
 		exit 1
 	fi
 
-	local config_content=
+	local config_content=""
 	config_content="$(cat ${config_file})"
 
 	if [ -z "$(get_json_string "$config_content" '.listen')" ]; then
@@ -1958,7 +2128,7 @@ load_instance_config() {
 		exit 1
 	fi
 
-	local lines=
+	local lines=""
 	lines="$(get_json_string "$config_content" 'to_entries | map("\(.key)=\(.value | @sh)") | .[]')"
 
 	OLDIFS=$IFS
@@ -1971,12 +2141,12 @@ load_instance_config() {
 	if [ -n "$listen" ]; then
 		listen_port="$(echo "$listen" | rev | cut -d ':' -f1 | rev)"
 		listen_addr="$(echo "$listen" | sed "s/:${listen_port}$//" | grep -oE '[0-9a-fA-F\.:]*')"
-		listen=
+		listen=""
 	fi
 	if [ -n "$target" ]; then
 		target_port="$(echo "$target" | rev | cut -d ':' -f1 | rev)"
 		target_addr="$(echo "$target" | sed "s/:${target_port}$//" | grep -oE '[0-9a-fA-F\.:]*')"
-		target=
+		target=""
 	fi
 
 	if [ -n "$listen_port" ]; then
@@ -1984,8 +2154,9 @@ load_instance_config() {
 	fi
 }
 
+# 显示服务端 Kcptun 版本，和客户端文件的下载地址
 show_version_and_client_url() {
-	local version=
+	local version=""
 	version="$(get_installed_version)"
 	if [ -n "$version" ]; then
 		cat >&1 <<-EOF
@@ -2003,8 +2174,9 @@ show_version_and_client_url() {
 	fi
 }
 
+# 显示当前选择实例的信息
 show_current_instance_info() {
-	local server_ip=
+	local server_ip=""
 	server_ip="$(get_server_ip)"
 
 	printf "服务器IP: \033[41;37m ${server_ip} \033[0m\n"
@@ -2022,13 +2194,17 @@ show_current_instance_info() {
 	}
 
 	show_configs "key" "crypt" "mode" "mtu" "sndwnd" "rcvwnd" "datashard" \
-		"parityshard" "dscp" "nocomp" "nodelay" "interval" "resend" \
+		"parityshard" "dscp" "nocomp" "quiet" "nodelay" "interval" "resend" \
 		"nc" "acknodelay" "sockbuf" "keepalive"
 
 	show_version_and_client_url
 
 	install_jq
-	local client_config=
+	local client_config=""
+
+	# 这里输出的是客户端所使用的配置信息
+	# 客户端的 *remoteaddr* 端口号为服务端的 *listen_port*
+	# 客户端的 *localaddr* 端口号被设置为了服务端的加速端口
 	read -d '' client_config <<-EOF
 	{
 	  "localaddr": ":${target_port}",
@@ -2059,7 +2235,7 @@ show_current_instance_info() {
 	}
 
 	gen_client_configs "crypt" "mode" "mtu" "sndwnd" "rcvwnd" "datashard" \
-		"parityshard" "dscp" "nocomp" "nodelay" "interval" "resend" \
+		"parityshard" "dscp" "nocomp" "quiet" "nodelay" "interval" "resend" \
 		"nc" "acknodelay" "sockbuf" "keepalive"
 
 	cat >&1 <<-EOF
@@ -2093,7 +2269,7 @@ show_current_instance_info() {
 	}
 
 	gen_client_configs "crypt" "mode" "mtu" "sndwnd" "rcvwnd" "datashard" \
-		"parityshard" "dscp" "nocomp" "nodelay" "interval" "resend" \
+		"parityshard" "dscp" "nocomp" "quiet" "nodelay" "interval" "resend" \
 		"nc" "acknodelay" "sockbuf" "keepalive"
 
 	cat >&1 <<-EOF
@@ -2139,6 +2315,7 @@ do_install() {
 	EOF
 }
 
+# 卸载操作
 do_uninstall() {
 	check_root
 	cat >&1 <<-'EOF'
@@ -2175,7 +2352,8 @@ do_uninstall() {
 			y|Y)
 				if command_exists systemctl; then
 					systemctl disable supervisord.service
-					rm -f '/lib/systemd/system/supervisord.service'
+					rm -f "/lib/systemd/system/supervisord.service" \
+						"/etc/systemd/system/supervisord.service"
 				elif command_exists service; then
 					if [ -z "$lsb_dist" ]; then
 						get_os_info
@@ -2200,7 +2378,15 @@ do_uninstall() {
 
 				(
 					set -x
-					rm -rf "$(easy_install -mxN supervisor | grep 'Using.*supervisor.*\.egg' | awk '{print $2}')"
+					# 新版使用 pip 卸载
+					if command_exists pip; then
+						pip uninstall -y supervisor 2>/dev/null || true
+					fi
+
+					# 旧版使用 easy_install 卸载
+					if command_exists easy_install; then
+						rm -rf "$(easy_install -mxN supervisor | grep 'Using.*supervisor.*\.egg' | awk '{print $2}')"
+					fi
 
 					rm -rf '/etc/supervisor/'
 					rm -f '/usr/local/bin/supervisord' \
@@ -2221,11 +2407,12 @@ do_uninstall() {
 
 	cat >&1 <<-EOF
 	卸载完成, 欢迎再次使用。
-	注意: 脚本没有自动卸载 python-setuptools (包含 easy_install)
+	注意: 脚本没有自动卸载 python-pip 和 python-setuptools（旧版脚本使用）
 	如有需要, 你可以自行卸载。
 	EOF
 }
 
+# 更新
 do_update() {
 	pre_ckeck
 
@@ -2292,12 +2479,17 @@ do_update() {
 		fi
 	fi
 
-	easy_install -U supervisor >/dev/null 2>&1
+	# 如果是通过 pip 安装的
+	if ( pip list --format columns 2>/dev/null | grep -q "supervisor" ); then
+		pip install --upgrade pip supervisor >/dev/null 2>&1
+	else
+		easy_install -U supervisor >/dev/null 2>&1
+	fi
 
 	echo "开始获取 Kcptun 版本信息..."
 	get_kcptun_version_info
 
-	local cur_tag_name=
+	local cur_tag_name=""
 	cur_tag_name="$(get_installed_version)"
 
 	if [ -n "$cur_tag_name" ] && is_number "$cur_tag_name" && [ ${#cur_tag_name} -eq 8 ]; then
@@ -2324,6 +2516,7 @@ do_update() {
 	fi
 }
 
+# 添加实例
 instance_add() {
 	pre_ckeck
 
@@ -2343,6 +2536,7 @@ instance_add() {
 	show_current_instance_info
 }
 
+# 删除实例
 instance_del() {
 	pre_ckeck
 
@@ -2367,6 +2561,7 @@ instance_del() {
 	EOF
 	any_key_to_continue
 
+	# 获取实例的 supervisor 配置文件
 	supervisor_config_file="$(get_current_file 'supervisor')"
 	if [ ! -f "$supervisor_config_file" ]; then
 		echo "你选择的实例 kcptun${current_instance_id} 不存在!"
@@ -2392,6 +2587,7 @@ instance_del() {
 	EOF
 }
 
+# 显示实例信息
 instance_show() {
 	pre_ckeck
 
@@ -2418,6 +2614,7 @@ instance_show() {
 	show_current_instance_info
 }
 
+# 显示实例日志
 instance_log() {
 	pre_ckeck
 
@@ -2439,7 +2636,7 @@ instance_log() {
 
 	echo "你选择了查看实例 kcptun${current_instance_id} 的日志, 正在读取..."
 
-	local log_file=
+	local log_file=""
 	log_file="$(get_current_file 'log')"
 
 	if [ -f "$log_file" ]; then
@@ -2456,6 +2653,7 @@ instance_log() {
 	fi
 }
 
+# 重新配置实例
 instance_reconfig() {
 	pre_ckeck
 
@@ -2485,7 +2683,7 @@ instance_reconfig() {
 		exit 1
 	fi
 
-	local sel=
+	local sel=""
 	cat >&1 <<-'EOF'
 	请选择操作:
 	(1) 重新配置实例所有选项
@@ -2498,7 +2696,7 @@ instance_reconfig() {
 	case "${sel:0:1}" in
 		2)
 			echo "正在打开配置文件, 请手动修改..."
-			local config_file=
+			local config_file=""
 			config_file="$(get_current_file 'config')"
 			edit_config_file() {
 				if [ ! -f "$config_file" ]; then
@@ -2570,15 +2768,15 @@ manual_install() {
 
 		if [ "$tag_name" = "SNMP_Milestone" ]; then
 			echo "不支持此版本, 请重新输入!"
-			tag_name=
+			tag_name=""
 			continue
 		fi
 
-		local version_num=
+		local version_num=""
 		version_num=$(echo "$tag_name" | grep -oE "[0-9]+" || "0")
 		if [ ${#version_num} -eq 8 ] && [ $version_num -le 20160826 ]; then
 			echo "不支持安装 v20160826 及以前版本"
-			tag_name=
+			tag_name=""
 			continue
 		fi
 
@@ -2591,7 +2789,7 @@ manual_install() {
 			  ${KCPTUN_TAGS_URL}
 			查看所有可用 TAG
 			EOF
-			tag_name=
+			tag_name=""
 			continue
 		else
 			cat >&1 <<-EOF
@@ -2621,6 +2819,7 @@ pre_ckeck() {
 	fi
 }
 
+# 监测是否安装了 kcptun
 is_installed() {
 	if [ -d '/usr/share/kcptun' ]; then
 		cat >&1 <<-EOF
@@ -2647,7 +2846,7 @@ is_installed() {
 
 # 检查是否已经安装
 installed_check() {
-	local instance_count=
+	local instance_count=""
 	instance_count="$(get_instance_count)"
 	if is_installed && [ $instance_count -gt 0 ]; then
 		cat >&1 <<-EOF
